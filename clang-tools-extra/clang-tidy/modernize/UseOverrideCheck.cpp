@@ -21,12 +21,14 @@ UseOverrideCheck::UseOverrideCheck(StringRef Name, ClangTidyContext *Context)
     : ClangTidyCheck(Name, Context),
       IgnoreDestructors(Options.get("IgnoreDestructors", false)),
       OverrideSpelling(Options.get("OverrideSpelling", "override")),
-      FinalSpelling(Options.get("FinalSpelling", "final")) {}
+      FinalSpelling(Options.get("FinalSpelling", "final")),
+      UseVirtualToo(Options.get("UseVirtualToo", false)) {}
 
 void UseOverrideCheck::storeOptions(ClangTidyOptions::OptionMap &Opts) {
   Options.store(Opts, "IgnoreDestructors", IgnoreDestructors);
   Options.store(Opts, "OverrideSpelling", OverrideSpelling);
   Options.store(Opts, "FinalSpelling", FinalSpelling);
+  Options.store(Opts, "UseVirtualToo", UseVirtualToo);
 }
 
 void UseOverrideCheck::registerMatchers(MatchFinder *Finder) {
@@ -103,15 +105,20 @@ void UseOverrideCheck::check(const MatchFinder::MatchResult &Result) {
   bool OnlyVirtualSpecified = HasVirtual && !HasOverride && !HasFinal;
   unsigned KeywordCount = HasVirtual + HasOverride + HasFinal;
 
-  if (!OnlyVirtualSpecified && KeywordCount == 1)
+  if ((!UseVirtualToo && !OnlyVirtualSpecified && KeywordCount == 1)
+   || ( UseVirtualToo && HasVirtual && KeywordCount == 2))
     return; // Nothing to do.
 
   std::string Message;
   if (OnlyVirtualSpecified) {
-    Message = "prefer using '%0' or (rarely) '%1' instead of 'virtual'";
+    Message = !UseVirtualToo ? "prefer using '%0' or (rarely) '%1' instead of 'virtual'"
+                             : "prefer using '%0' or (rarely) '%1' and 'virtual'";
   } else if (KeywordCount == 0) {
     Message = "annotate this function with '%0' or (rarely) '%1'";
-  } else {
+    if(UseVirtualToo) {
+      Message += " and 'virtual'";
+    }
+  } else if (!UseVirtualToo){
     StringRef Redundant =
         HasVirtual ? (HasOverride && HasFinal ? "'virtual' and '%0' are"
                                               : "'virtual' is")
@@ -121,6 +128,11 @@ void UseOverrideCheck::check(const MatchFinder::MatchResult &Result) {
     Message = (llvm::Twine(Redundant) +
                " redundant since the function is already declared " + Correct)
                   .str();
+  } else if(UseVirtualToo && !HasVirtual){
+    Message = "Use 'virtual' too";
+  } else {
+    //FIXME: if it can happen
+    Message = "FIXME: if it can happen";
   }
 
   auto Diag = diag(Method->getLocation(), Message)
@@ -217,7 +229,7 @@ void UseOverrideCheck::check(const MatchFinder::MatchResult &Result) {
         CharSourceRange::getTokenRange(OverrideLoc, OverrideLoc));
   }
 
-  if (HasVirtual) {
+  if (!UseVirtualToo && HasVirtual) {
     for (Token Tok : Tokens) {
       if (Tok.is(tok::kw_virtual)) {
         Diag << FixItHint::CreateRemoval(CharSourceRange::getTokenRange(
@@ -226,6 +238,14 @@ void UseOverrideCheck::check(const MatchFinder::MatchResult &Result) {
       }
     }
   }
+  if (UseVirtualToo && !HasVirtual) {
+    //diag(Method->getLocation(), "in if");
+    SourceLocation InsertLoc = Method->getBeginLoc();
+    std::string ReplacementText = "virtual ";
+    Diag << FixItHint::CreateInsertion(InsertLoc, ReplacementText /*, true*/ );
+    
+  }
+
 }
 
 } // namespace modernize

@@ -28,6 +28,7 @@ private:
   const bool IgnoreDestructors;
   const std::string OverrideSpelling;
   const std::string FinalSpelling;
+  const bool UseVirtualToo;
 };
 
 } // namespace modernize
