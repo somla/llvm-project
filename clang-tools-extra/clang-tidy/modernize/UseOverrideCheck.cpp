@@ -21,6 +21,7 @@ namespace modernize {
 UseOverrideCheck::UseOverrideCheck(StringRef Name, ClangTidyContext *Context)
     : ClangTidyCheck(Name, Context),
       IgnoreDestructors(Options.get("IgnoreDestructors", false)),
+      IgnoreFinalOverride(Options.get("IgnoreFinalOverride", false)),
       OverrideSpelling(Options.get("OverrideSpelling", "override")),
       FinalSpelling(Options.get("FinalSpelling", "final")),
       OverrideMode(llvm::StringSwitch<OverrideModeType>(
@@ -32,6 +33,7 @@ UseOverrideCheck::UseOverrideCheck(StringRef Name, ClangTidyContext *Context)
 
 void UseOverrideCheck::storeOptions(ClangTidyOptions::OptionMap &Opts) {
   Options.store(Opts, "IgnoreDestructors", IgnoreDestructors);
+  Options.store(Opts, "IgnoreFinalOverride", IgnoreFinalOverride);
   Options.store(Opts, "OverrideSpelling", OverrideSpelling);
   Options.store(Opts, "FinalSpelling", FinalSpelling);
   SmallVector<std::string, 3> Modes{"OnlyOverride", "IgnoreVirtual", "WriteBoth"};
@@ -112,9 +114,11 @@ void UseOverrideCheck::check(const MatchFinder::MatchResult &Result) {
   bool OnlyVirtualSpecified = HasVirtual && !HasOverride && !HasFinal;
   unsigned KeywordCount = HasVirtual + HasOverride + HasFinal;
 
-  if ((OM_OnlyOverride == OverrideMode && !OnlyVirtualSpecified && KeywordCount == 1)
-   || (OM_WriteBoth == OverrideMode && HasVirtual && KeywordCount == 2)
-   || (OM_IgnoreVirtual == OverrideMode && (HasOverride || HasFinal) && HasOverride + HasFinal == 1 ))
+  bool NothingToDoOverrideMode = OM_OnlyOverride == OverrideMode && ((!IgnoreFinalOverride && !OnlyVirtualSpecified && KeywordCount == 1)
+                                                                    || (IgnoreFinalOverride && !OnlyVirtualSpecified));
+  bool NothingToDoWriteBothMode = OM_WriteBoth == OverrideMode && HasVirtual && (KeywordCount == 2 || (IgnoreFinalOverride && KeywordCount == 3));
+  bool NothingToDoIgnoreVirtual = (OM_IgnoreVirtual == OverrideMode && (HasOverride || HasFinal) && ( IgnoreFinalOverride || HasOverride + HasFinal == 1 ));
+  if (NothingToDoOverrideMode || NothingToDoWriteBothMode || NothingToDoIgnoreVirtual)
     return; // Nothing to do.
 
   std::string Message;
@@ -128,7 +132,7 @@ void UseOverrideCheck::check(const MatchFinder::MatchResult &Result) {
       Message += " and 'virtual'";
     }
   } else{
-    if(OM_OnlyOverride == OverrideMode)
+    if(OM_OnlyOverride == OverrideMode && !IgnoreFinalOverride)
     {
       StringRef Redundant =
           HasVirtual ? (HasOverride && HasFinal ? "'virtual' and '%0' are"
@@ -139,9 +143,16 @@ void UseOverrideCheck::check(const MatchFinder::MatchResult &Result) {
       Message = (llvm::Twine(Redundant) +
                 " redundant since the function is already declared " + Correct)
                     .str();
+    } else if(OM_OnlyOverride == OverrideMode && IgnoreFinalOverride) {
+      StringRef Redundant =
+          HasVirtual ? "'virtual' is": "'%0' is";
+      StringRef Correct = HasFinal ? "'%1'" : "'%0'";
+
+      Message = (llvm::Twine(Redundant) +
+                " redundant since the function is already declared " + Correct)
+                    .str();
     }
-    else if(HasOverride && HasFinal)
-    {
+    else if(HasOverride && HasFinal && !IgnoreFinalOverride) {
       Message = "'final' and 'override' are redundant";
       if(OM_WriteBoth == OverrideMode && !HasVirtual) {
         Message += " and not use 'virtual'";
@@ -242,7 +253,7 @@ void UseOverrideCheck::check(const MatchFinder::MatchResult &Result) {
     Diag << FixItHint::CreateInsertion(InsertLoc, ReplacementText);
   }
 
-  if (HasFinal && HasOverride) {
+  if (!IgnoreFinalOverride && HasFinal && HasOverride) {
     SourceLocation OverrideLoc = Method->getAttr<OverrideAttr>()->getLocation();
     Diag << FixItHint::CreateRemoval(
         CharSourceRange::getTokenRange(OverrideLoc, OverrideLoc));
@@ -258,13 +269,10 @@ void UseOverrideCheck::check(const MatchFinder::MatchResult &Result) {
     }
   }
   if (OM_WriteBoth == OverrideMode && !HasVirtual) {
-    //diag(Method->getLocation(), "in if");
     SourceLocation InsertLoc = Method->getBeginLoc();
     std::string ReplacementText = "virtual ";
-    Diag << FixItHint::CreateInsertion(InsertLoc, ReplacementText /*, true*/ );
-    
+    Diag << FixItHint::CreateInsertion(InsertLoc, ReplacementText);
   }
-
 }
 
 } // namespace modernize
