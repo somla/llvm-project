@@ -24,11 +24,16 @@ public:
   void check(const ast_matchers::MatchFinder::MatchResult &Result) override;
   void storeOptions(ClangTidyOptions::OptionMap &Opts) override;
 
+  enum OverrideModeType {
+    OM_OnlyOverride,
+    OM_IgnoreVirtual,
+    OM_WriteBoth,
+  };
 private:
   const bool IgnoreDestructors;
   const std::string OverrideSpelling;
   const std::string FinalSpelling;
-  const bool UseVirtualToo;
+  const OverrideModeType OverrideMode;
 };
 
 } // namespace modernize

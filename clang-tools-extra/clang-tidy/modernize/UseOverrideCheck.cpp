@@ -10,6 +10,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/Lex/Lexer.h"
+#include "llvm/ADT/StringSwitch.h"
 
 using namespace clang::ast_matchers;
 
@@ -22,13 +23,19 @@ UseOverrideCheck::UseOverrideCheck(StringRef Name, ClangTidyContext *Context)
       IgnoreDestructors(Options.get("IgnoreDestructors", false)),
       OverrideSpelling(Options.get("OverrideSpelling", "override")),
       FinalSpelling(Options.get("FinalSpelling", "final")),
-      UseVirtualToo(Options.get("UseVirtualToo", false)) {}
+      OverrideMode(llvm::StringSwitch<OverrideModeType>(
+        Options.get("OverrideMode","OnlyOverride"))
+        .Case("OnlyOverride",OM_OnlyOverride)
+        .Case("IgnoreVirtual",OM_IgnoreVirtual)
+        .Case("WriteBoth",OM_WriteBoth)
+        .Default(OM_OnlyOverride)) {}
 
 void UseOverrideCheck::storeOptions(ClangTidyOptions::OptionMap &Opts) {
   Options.store(Opts, "IgnoreDestructors", IgnoreDestructors);
   Options.store(Opts, "OverrideSpelling", OverrideSpelling);
   Options.store(Opts, "FinalSpelling", FinalSpelling);
-  Options.store(Opts, "UseVirtualToo", UseVirtualToo);
+  SmallVector<std::string, 3> Modes{"OnlyOverride", "IgnoreVirtual", "WriteBoth"};
+  Options.store(Opts, "OverrideMode", Modes[static_cast<int>(OverrideMode)]);
 }
 
 void UseOverrideCheck::registerMatchers(MatchFinder *Finder) {
@@ -105,34 +112,46 @@ void UseOverrideCheck::check(const MatchFinder::MatchResult &Result) {
   bool OnlyVirtualSpecified = HasVirtual && !HasOverride && !HasFinal;
   unsigned KeywordCount = HasVirtual + HasOverride + HasFinal;
 
-  if ((!UseVirtualToo && !OnlyVirtualSpecified && KeywordCount == 1)
-   || ( UseVirtualToo && HasVirtual && KeywordCount == 2))
+  if ((OM_OnlyOverride == OverrideMode && !OnlyVirtualSpecified && KeywordCount == 1)
+   || (OM_WriteBoth == OverrideMode && HasVirtual && KeywordCount == 2)
+   || (OM_IgnoreVirtual == OverrideMode && (HasOverride || HasFinal) && HasOverride + HasFinal == 1 ))
     return; // Nothing to do.
 
   std::string Message;
   if (OnlyVirtualSpecified) {
-    Message = !UseVirtualToo ? "prefer using '%0' or (rarely) '%1' instead of 'virtual'"
-                             : "prefer using '%0' or (rarely) '%1' and 'virtual'";
+    Message = OM_OnlyOverride == OverrideMode ? "prefer using '%0' or (rarely) '%1' instead of 'virtual'"
+            : OM_WriteBoth == OverrideMode ? "prefer using '%0' or (rarely) '%1' and 'virtual'"
+                                           : "prefer using '%0' or (rarely) '%1' not only 'virtual'";
   } else if (KeywordCount == 0) {
     Message = "annotate this function with '%0' or (rarely) '%1'";
-    if(UseVirtualToo) {
+    if(OM_WriteBoth == OverrideMode) {
       Message += " and 'virtual'";
     }
-  } else if (!UseVirtualToo){
-    StringRef Redundant =
-        HasVirtual ? (HasOverride && HasFinal ? "'virtual' and '%0' are"
-                                              : "'virtual' is")
-                   : "'%0' is";
-    StringRef Correct = HasFinal ? "'%1'" : "'%0'";
+  } else{
+    if(OM_OnlyOverride == OverrideMode)
+    {
+      StringRef Redundant =
+          HasVirtual ? (HasOverride && HasFinal ? "'virtual' and '%0' are"
+                                                : "'virtual' is")
+                    : "'%0' is";
+      StringRef Correct = HasFinal ? "'%1'" : "'%0'";
 
-    Message = (llvm::Twine(Redundant) +
-               " redundant since the function is already declared " + Correct)
-                  .str();
-  } else if(UseVirtualToo && !HasVirtual){
-    Message = "Use 'virtual' too";
-  } else {
-    //FIXME: if it can happen
-    Message = "FIXME: if it can happen";
+      Message = (llvm::Twine(Redundant) +
+                " redundant since the function is already declared " + Correct)
+                    .str();
+    }
+    else if(HasOverride && HasFinal)
+    {
+      Message = "'final' and 'override' are redundant";
+      if(OM_WriteBoth == OverrideMode && !HasVirtual) {
+        Message += " and not use 'virtual'";
+      }
+    } else if(OM_WriteBoth == OverrideMode && !HasVirtual){
+      Message = "not use 'virtual'";
+    } else {
+      //FIXME: if it can happen
+      Message = "FIXME: if it can happen";
+    }
   }
 
   auto Diag = diag(Method->getLocation(), Message)
@@ -229,7 +248,7 @@ void UseOverrideCheck::check(const MatchFinder::MatchResult &Result) {
         CharSourceRange::getTokenRange(OverrideLoc, OverrideLoc));
   }
 
-  if (!UseVirtualToo && HasVirtual) {
+  if (OM_OnlyOverride == OverrideMode && HasVirtual) {
     for (Token Tok : Tokens) {
       if (Tok.is(tok::kw_virtual)) {
         Diag << FixItHint::CreateRemoval(CharSourceRange::getTokenRange(
@@ -238,7 +257,7 @@ void UseOverrideCheck::check(const MatchFinder::MatchResult &Result) {
       }
     }
   }
-  if (UseVirtualToo && !HasVirtual) {
+  if (OM_WriteBoth == OverrideMode && !HasVirtual) {
     //diag(Method->getLocation(), "in if");
     SourceLocation InsertLoc = Method->getBeginLoc();
     std::string ReplacementText = "virtual ";
